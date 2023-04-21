@@ -1,0 +1,438 @@
+#PART1: miscellaneous small scripts
+#--------------------------------------------------------------
+#calculate the shannon diversity for the distribution of different categories
+#input: a column with different categories
+#output: shannon diversity
+shannon = function (freq) {
+    sum_freq = sum(freq)
+    shan = 0
+    for (i in freq) {
+        index = -(i/sum_freq)*log2(i/sum_freq)
+        shan = shan+index
+    }
+    return(shan)
+}
+
+#a summarge function pass to summarise function to aggregate all scar information
+scar_merge = function(x) {
+    indel = ""
+    for (i in x) {
+        indel  = paste(indel, i, sep="|")
+    }
+    return(indel)
+}
+
+#PART2: some functions to handle calculation of information gains
+#--------------------------------------------------------------
+#obtain both the lineage information and barcode information
+#input: allele_table of DuTracer and single cell meta data
+#output: a dataframe contain both single cell meta information and lineage information
+allele_to_lineage = function(allele_table, sc_meta) {
+    LinTrans = inner_join(allele_table, sc_meta, by="cellBC")
+    #LinTrans = LinTrans[grep("[ID]", LinTrans$allele),] will introduce significant biase to the dataset
+    LinTrans = LinTrans %>% select(cellBC, intBC, r1, r2, r3, r4, lineageGrp, cell_type)
+
+    #transform the integration barcode for better representation
+    intBCnames = sapply(1:length(unique(LinTrans$intBC)), function(x) paste0("bc",x))
+    setIntBCnames = setNames(intBCnames, unique(LinTrans$intBC))             
+    LinTrans$intBC = setIntBCnames[LinTrans$intBC]
+
+    #transform the target site for better representation
+    LinTrans$r1 = gsub("[ATCG]", "", LinTrans$r1)
+    LinTrans$r2 = gsub("[ATCG]", "", LinTrans$r2)
+    LinTrans$r3 = gsub("[ATCG]", "", LinTrans$r3)
+    LinTrans$r4 = gsub("[ATCG]", "", LinTrans$r4)
+    return(LinTrans)
+}
+
+#--------------------------------------------------------------
+#select_barcode = "CTACGCTTGTCCGA[91:12D]"
+#define a function to calculate the information gain of a specific barcode
+#target_barcode is a data.frame for specific target set
+info_gain_barcode = function(target_barcode, select_barcode) {
+     #calculate those shannons with selected barcodes
+    selected_barcode_cells = target_barcode %>% filter( grepl(select_barcode, barcodeset, fixed=T) ) %>% 
+        select(type) %>% table() %>% as.data.frame()
+    positive = sum(selected_barcode_cells$Freq)
+    positive_shannon = shannon(selected_barcode_cells$Freq[selected_barcode_cells$Freq != 0])
+     
+     #calculate those shannons without selected barcodes
+    selected_barcode_cells = target_barcode %>% filter( !grepl(select_barcode, barcodeset, fixed=T) ) %>% 
+        select(type) %>% table() %>% as.data.frame()
+    negative = sum(selected_barcode_cells$Freq)
+    negative_shannon = shannon(selected_barcode_cells$Freq[selected_barcode_cells$Freq != 0])
+    son_shannon = positive_shannon*positive/nrow(target_barcode)+negative_shannon*negative/nrow(target_barcode)
+    overall_barcode_cells = as.data.frame(table(target_barcode$type))
+    father_shannon = shannon(overall_barcode_cells$Freq[overall_barcode_cells$Freq != 0])
+    info_gain = round(father_shannon-son_shannon, 5)
+    return(list(select_barcode, info_gain))
+}
+
+
+#--------------------------------------------------------------
+#linGrp = 17, should select a specific lineage group
+#Note: LinTrans should be a dataframe for a specific sample, while linGrp should be a specific number representing a lineage group
+info_gain_all_targets = function(LinTrans, linGrp) {
+    #filter those allele and cell type information for a specific lineage group
+    lineage_selected = LinTrans %>% filter(lineageGrp==linGrp) %>% 
+          mutate(cas9 = paste(intBC, r3, r4, sep="_"), cpf1=paste(intBC, r1, r2, sep="_")) %>% 
+          mutate(r1 = paste(intBC, r1, sep="_"), r2 = paste(intBC, r2, sep="_"), r3=paste(intBC, r3, sep="_"), r4=paste(intBC, r4, sep="_")) 
+
+    #calculate father shannon
+    target_barcode = lineage_selected %>% select(cellBC, r1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r1), type = unique(cell_type))
+    overall_barcode_cells = as.data.frame(table(target_barcode$type))
+    father_shannon = shannon(overall_barcode_cells$Freq[overall_barcode_cells$Freq != 0])
+
+    #calculate target r1
+    target_barcode = lineage_selected %>% select(cellBC, r1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r1), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r1, value=TRUE))
+    info_gain_r1 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r1 = rbind(info_gain_r1, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r1) = c('barcode', 'info_gain')
+
+    #calculate target r2
+    target_barcode = lineage_selected %>% select(cellBC, r2, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r2), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r2, value=TRUE))
+    info_gain_r2 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r2 = rbind(info_gain_r2, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r2) = c('barcode', 'info_gain')
+
+    #calculate target r3
+    target_barcode = lineage_selected %>% select(cellBC, r3, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r3), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r3, value=TRUE))
+    info_gain_r3 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r3 = rbind(info_gain_r3, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r3) = c('barcode', 'info_gain')
+
+    #calculate target r4
+    target_barcode = lineage_selected %>% select(cellBC, r4, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r4), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r4, value=TRUE))
+    info_gain_r4 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r4 = rbind(info_gain_r4, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r4) = c('barcode', 'info_gain')
+
+    #calculate target cas9
+    target_barcode = lineage_selected %>% select(cellBC, cas9, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(cas9), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$cas9, value=TRUE))
+    info_gain_cas9 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_cas9 = rbind(info_gain_cas9, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_cas9) = c('barcode', 'info_gain')
+
+    #calculate target cpf1
+    target_barcode = lineage_selected %>% select(cellBC, cpf1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(cpf1), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$cpf1, value=TRUE))
+    info_gain_cpf1 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_cpf1 = rbind(info_gain_cpf1, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_cpf1) = c('barcode', 'info_gain')
+
+    #add target label for separte plot
+    if (nrow(info_gain_r1)>0) {
+        info_gain_r1$target = "r1"
+    }
+    if (nrow(info_gain_r2)>0) {
+        info_gain_r2$target = "r2"
+    }
+    if (nrow(info_gain_r3)>0) {
+        info_gain_r3$target = "r3"
+    }
+    if (nrow(info_gain_r4)>0) {
+        info_gain_r4$target = "r4"
+    }
+    if (nrow(info_gain_cpf1)>0) {
+        info_gain_cpf1$target = "cpf1"
+    }
+    if (nrow(info_gain_cas9)>0) {
+        info_gain_cas9$target = "cas9"
+    }
+
+    #build a datafram to store all infomation gain for four targets
+    info_gain_r1 = info_gain_r1 %>% arrange(info_gain)
+    info_gain_r2 = info_gain_r2 %>% arrange(info_gain)
+    info_gain_r3 = info_gain_r3 %>% arrange(info_gain)
+    info_gain_r4 = info_gain_r4 %>% arrange(info_gain)
+    
+    info_gain_all = rbind(info_gain_r1, info_gain_r2, info_gain_r3, info_gain_r4)
+    info_gain_all = info_gain_all[!duplicated(info_gain_all$barcode),]
+    info_gain_all$target = factor(info_gain_all$target, levels=c("r1", "r2", "r3", "r4"))
+    info_gain_all$barcode = factor(info_gain_all$barcode, levels=info_gain_all$barcode)
+    #build a data.frame to store all information gain for either cas9 or cpf1
+    info_gain_cas9 = info_gain_cas9 %>% arrange(info_gain)
+    info_gain_cpf1 = info_gain_cpf1 %>% arrange(info_gain)
+    info_gain_cas9cpf1 = rbind(info_gain_cas9, info_gain_cpf1)
+    info_gain_cas9cpf1 = info_gain_cas9cpf1[!duplicated(info_gain_cas9cpf1$barcode),]
+    info_gain_cas9cpf1$target = factor(info_gain_cas9cpf1$target, levels=c("cpf1", "cas9"))
+    info_gain_cas9cpf1$barcode = factor(info_gain_cas9cpf1$barcode, levels=info_gain_cas9cpf1$barcode)
+    
+    return(list(info_gain_all, info_gain_cas9cpf1, father_shannon))
+}
+#output: a list, the first data.frame contains the information gain for each target (r1, r2, r3, r4);
+#the second dataframe contains IG for each cas9 or cpf1 combination
+#the third one is father shannon index before splitting
+
+
+
+#--------------------------------------------------------------
+#In order to compare different separation effect of different targets, calculate the total inforamtion gain using all cells irrespective of their lineage group origin
+#Note: LinTrans should be a dataframe for a specific sample, while linGrp should be a specific number representing a lineage group
+IG_all__target_all_cells = function(LinTrans) {
+    #filter those allele and cell type information for a specific lineage group
+    lineage_selected = LinTrans %>% mutate(alltarget=paste("LG", lineageGrp, intBC, r1, r2, r3, r4, sep="_")) %>% 
+          mutate(cas9 = paste("LG", lineageGrp, intBC, r3, r4, sep="_"), cpf1=paste("LG", lineageGrp, intBC, r1, r2, sep="_")) %>% 
+          mutate(r1 = paste("LG", lineageGrp, intBC, r1, sep="_"), r2 = paste("LG", lineageGrp,intBC, r2, sep="_"), 
+          r3=paste("LG", lineageGrp,intBC, r3, sep="_"), r4=paste("LG", lineageGrp,intBC, r4, sep="_")) 
+
+    #calculate father shannon
+    target_barcode = lineage_selected %>% select(cellBC, r1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r1), type = unique(cell_type))
+    overall_barcode_cells = as.data.frame(table(target_barcode$type))
+    father_shannon = shannon(overall_barcode_cells$Freq[overall_barcode_cells$Freq != 0])
+
+    #calculate target r1
+    target_barcode = lineage_selected %>% select(cellBC, r1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r1), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r1, value=TRUE))
+    info_gain_r1 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r1 = rbind(info_gain_r1, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r1) = c('barcode', 'info_gain')
+
+    #calculate target r2
+    target_barcode = lineage_selected %>% select(cellBC, r2, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r2), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r2, value=TRUE))
+    info_gain_r2 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r2 = rbind(info_gain_r2, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r2) = c('barcode', 'info_gain')
+
+    #calculate target r3
+    target_barcode = lineage_selected %>% select(cellBC, r3, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r3), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r3, value=TRUE))
+    info_gain_r3 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r3 = rbind(info_gain_r3, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r3) = c('barcode', 'info_gain')
+
+    #calculate target r4
+    target_barcode = lineage_selected %>% select(cellBC, r4, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(r4), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$r4, value=TRUE))
+    info_gain_r4 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_r4 = rbind(info_gain_r4, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_r4) = c('barcode', 'info_gain')
+
+    #calculate target cas9
+    target_barcode = lineage_selected %>% select(cellBC, cas9, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(cas9), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$cas9, value=TRUE))
+    info_gain_cas9 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_cas9 = rbind(info_gain_cas9, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_cas9) = c('barcode', 'info_gain')
+
+    #calculate target cpf1
+    target_barcode = lineage_selected %>% select(cellBC, cpf1, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(cpf1), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$cpf1, value=TRUE))
+    info_gain_cpf1 = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_cpf1 = rbind(info_gain_cpf1, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_cpf1) = c('barcode', 'info_gain')
+
+    #calculate all target
+    target_barcode = lineage_selected %>% select(cellBC, alltarget, cell_type) %>% group_by(cellBC) %>% 
+         summarise(barcodeset = scar_merge(alltarget), type = unique(cell_type))
+
+    barcodes = unique(grep("[ID]", lineage_selected$alltarget, value=TRUE))
+    info_gain_alltarget = data.frame('barcode' = character(), 'info_gain'=numeric())
+    for (select_barcode in barcodes) {
+         info_gain_alltarget = rbind(info_gain_alltarget, info_gain_barcode(target_barcode ,select_barcode))   
+    }
+    colnames(info_gain_alltarget) = c('barcode', 'info_gain')
+
+    #add target label for separte plot
+    if (nrow(info_gain_r1)>0) {
+        info_gain_r1$target = "r1"
+    }
+    if (nrow(info_gain_r2)>0) {
+        info_gain_r2$target = "r2"
+    }
+    if (nrow(info_gain_r3)>0) {
+        info_gain_r3$target = "r3"
+    }
+    if (nrow(info_gain_r4)>0) {
+        info_gain_r4$target = "r4"
+    }
+    if (nrow(info_gain_cpf1)>0) {
+        info_gain_cpf1$target = "cpf1"
+    }
+    if (nrow(info_gain_cas9)>0) {
+        info_gain_cas9$target = "cas9"
+    }
+    if (nrow(info_gain_alltarget)>0) {
+        info_gain_alltarget$target = "alltarget"
+    }
+
+    #build a datafram to store all infomation gain for four targets
+    info_gain_r1 = info_gain_r1 %>% arrange(info_gain)
+    info_gain_r2 = info_gain_r2 %>% arrange(info_gain)
+    info_gain_r3 = info_gain_r3 %>% arrange(info_gain)
+    info_gain_r4 = info_gain_r4 %>% arrange(info_gain)
+    
+    info_gain_all = rbind(info_gain_r1, info_gain_r2, info_gain_r3, info_gain_r4)
+    info_gain_all = info_gain_all[!duplicated(info_gain_all$barcode),]
+    info_gain_all$target = factor(info_gain_all$target, levels=c("r1", "r2", "r3", "r4"))
+    info_gain_all$barcode = factor(info_gain_all$barcode, levels=info_gain_all$barcode)
+    #build a data.frame to store all information gain for either cas9 or cpf1
+    info_gain_cas9 = info_gain_cas9 %>% arrange(info_gain)
+    info_gain_cpf1 = info_gain_cpf1 %>% arrange(info_gain)
+    info_gain_cas9cpf1 = rbind(info_gain_cas9, info_gain_cpf1)
+    info_gain_cas9cpf1 = info_gain_cas9cpf1[!duplicated(info_gain_cas9cpf1$barcode),]
+    info_gain_cas9cpf1$target = factor(info_gain_cas9cpf1$target, levels=c("cpf1", "cas9"))
+    info_gain_cas9cpf1$barcode = factor(info_gain_cas9cpf1$barcode, levels=info_gain_cas9cpf1$barcode)
+    
+    #build a data.frame to store information gain for all targets
+    info_gain_alltarget = info_gain_alltarget %>% arrange(info_gain)
+    info_gain_alltarget$barcode = factor(info_gain_alltarget$barcode, levels=info_gain_alltarget$barcode)
+
+    return(list(info_gain_all, info_gain_cas9cpf1, father_shannon, info_gain_alltarget))
+}
+#output: a list, the first data.frame contains the information gain for each target (r1, r2, r3, r4);
+#the second dataframe contains IG for each cas9 or cpf1 combination
+#the third one is father shannon index before splitting
+#the fourth one contains information gain for each target combinations
+
+#--------------------------------------------------------------
+#data structure tranformation
+#default order is cpf1 mutated first, cas9 mutated second
+lineageD3data = function(EBmerge, sample, lineage,  cl_cols, cpf1_first) {
+    lineage$cpf1 = paste(lineage$r1, lineage$r2, sep="|")
+    lineage$cas9 = paste(lineage$r3, lineage$r4, sep="|") #be careful, cas9 and cpf1 is correlated by cells.
+    LinTrans = left_join(lineage,EBmerge@meta.data, by="cellBC")
+    LinTrans = LinTrans %>% select(cellBC, intBC, cpf1, cas9, lineageGrp, cell_type)
+    LinTrans = LinTrans[!is.na(LinTrans$cell_type),]
+    LinTrans$cpf1 = gsub("[ATCG]", "", LinTrans$cpf1) 
+    LinTrans$cas9 = gsub("[ATCG]", "", LinTrans$cas9) 
+    LinTrans = LinTrans %>% select(cellBC, lineageGrp, cpf1, cas9, cell_type)
+    LinTrans1 = LinTrans %>% group_by(cellBC) %>% 
+                                summarise(GeneBarcodeMerge = unique(lineageGrp), Cpf1scarMerge = scar_merge(cpf1), 
+                                          Cas9scarMerge = scar_merge(cas9), seurat_cluster = unique(cell_type))
+
+
+    #org_cells = subset(EBmerge, subset = orig.ident==sample)
+    cl_orders = names(cl_cols)
+
+    org_cells = as.data.frame(LinTrans1)
+    org_cells$seurat_cluster = factor(org_cells$seurat_cluster)
+    org_cells$GeneBarcodeMerge = paste0("linGrp", org_cells$GeneBarcodeMerge)
+    
+    org_cells <- org_cells[base::order(org_cells$GeneBarcodeMerge, org_cells$Cpf1scarMerge,  org_cells$Cas9scarMerge, setNames(1:length(cl_orders),cl_orders)[as.character(org_cells$seurat_cluster)]),]
+    if (cpf1_first==TRUE) {
+        org_cells$pathString <- paste(sample,  org_cells$GeneBarcodeMerge, org_cells$Cpf1scarMerge,org_cells$Cas9scarMerge,org_cells$cellBC, sep = "/")
+        } else {
+        org_cells$pathString <- paste(sample,  org_cells$GeneBarcodeMerge, org_cells$Cas9scarMerge, org_cells$Cpf1scarMerge,org_cells$cellBC, sep = "/")
+    }
+    
+    #org_cells$pathString <- paste(sample,  org_cells$GeneBarcodeMerge, org_cells$Cpf1scarMerge,org_cells$Cas9scarMerge,org_cells$cellBC, sep = "/")
+ 
+    #need to add cellBC to the rownames, as extract colors from lineage_cells_network is neccessary
+    rownames(org_cells) = org_cells$cellBC
+    return(org_cells)
+    }
+
+
+#define a function to plot lineage trees. Note: already contains file path information
+#build a directory to save datasets
+#EBmerge, single cell meta.data; sample, allele datasets for a specific sample;
+#cl_cols, color group to label cell types; cas9, cas9 mutation?; cpf1, cpf1 mutation; 
+#cpf1_first, whether cpf1 mutated earlier than cas9? 
+call_lineage = function(EBmerge, sample, cl_cols, cas9=TRUE, cpf1=TRUE, cpf1_first=TRUE, dir_name) {
+    #dir_name = "fig5lineagesV3"
+    filename1 = paste0('~/dualproject/lineageData/mannualSharedCellV4/', sample, 'allCassiopeiaAllele.csv')
+    lineage = read.csv(filename1)
+    #lineage = read.csv(sample_file)
+    lineage$cpf1 = paste0(lineage$r1, lineage$r2)
+    if (cpf1==TRUE) {
+        lineage = lineage[grep("[DI]", lineage$cpf1), ]
+    }
+    
+    lineage$cas9 = paste0(lineage$r3, lineage$r4)
+    if (cas9==TRUE) {
+        lineage = lineage[grep("[DI]", lineage$cas9) , ]
+    }
+    
+    
+    org_cells = lineageD3data(EBmerge, sample, lineage, cl_cols, cpf1_first)
+    cat(c('The number of cell is', n_distinct(org_cells$cellBC), ', The number of lineage group is', n_distinct(org_cells$GeneBarcodeMerge), '.\n'))
+
+    lineage_cells <- as.Node(org_cells)
+    lineage_cells_network <- ToDataFrameNetwork(lineage_cells, "name")
+    lineage_cells_list <- ToListExplicit(lineage_cells, unname = TRUE)
+    cols <- c("#303030", cl_cols[as.character(org_cells[lineage_cells_network[,3],"seurat_cluster"])])
+    cols[is.na(cols)] <- "#636363"
+    jsarray <- paste0('["', paste(cols, collapse = '", "'), '"]')
+    nodeStrokeJS <- JS(paste0('function(d, i) { return ', jsarray, '[i]; }'))
+    radialNetwork(lineage_cells_list,  nodeColour = nodeStrokeJS, nodeStroke = NA, fontSize = 0)
+    BJ333D60indels = radialNetwork(lineage_cells_list,  nodeColour = nodeStrokeJS, nodeStroke = NA, fontSize = 0)
+
+    #create a path to store related lineage groups
+    save_path=paste0("~/dualproject/lineageData/",dir_name, "/")
+    output_dir <- file.path(paste0("~/dualproject/lineageData/",dir_name))
+    cat(c('The dir path is ', save_path))
+    if (!dir.exists(output_dir)){
+        dir.create(output_dir, recursive = T) 
+    } 
+
+    if (cas9==TRUE & cpf1==TRUE) {
+        #filename2 = paste0('./fig5lineagesV3/', sample, 'SharedClone.html')
+        filename2 = paste0(save_path, sample, 'SharedClone.html')
+    } else if (cas9==TRUE & cpf1==FALSE) {
+         filename2 = paste0(save_path, sample, 'cas9SharedClone.html')
+    } else if (cas9==FALSE & cpf1==TRUE) {
+         filename2 = paste0(save_path, sample, 'cpf1SharedClone.html')
+    } else {
+        filename2 = paste0(save_path, sample, 'allSharedClone.html')
+    }
+    
+    saveNetwork(BJ333D60indels,file=filename2, selfcontained=T)
+}
+
